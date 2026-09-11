@@ -4,6 +4,9 @@ import xml.etree.ElementTree as ET
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from PIL import Image, ImageTk, ImageOps, ImageEnhance
+from reportlab.pdfgen import canvas as pdfcanvas
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.utils import ImageReader
 
 APP = "CPK Report Generator"
 NS_MAIN="http://schemas.openxmlformats.org/spreadsheetml/2006/main"
@@ -83,7 +86,7 @@ def generate_report(template, outpath, fields, cpk, data, images):
     sheet='xl/worksheets/sheet1.xml'; root=ET.fromstring(parts[sheet])
     set_cell(root,'D4',fields['customer']); set_cell(root,'D5',fields['model']); set_cell(root,'G5',fields['serial'])
     eng=fields['eng1'] + ((" / "+fields['eng2']) if fields['eng2'] else '')
-    set_cell(root,'D6',eng); set_cell(root,'G6',excel_serial(fields['date']),numeric=True)
+    set_cell(root,'D6',eng); set_cell(root,'G6',fields['date'].strftime('%Y/%m/%d'))
     for i,v in enumerate(cpk): set_cell(root,chr(ord('C')+i)+'14',f'{v:.3f}',numeric=True)
     for i,row in enumerate(data, start=20):
         for j,v in enumerate(row): set_cell(root,chr(ord('C')+j)+str(i),v,numeric=True)
@@ -167,32 +170,103 @@ class App(tk.Tk):
         vals=None; err=''
         try: vals=ocr_cpk(p)
         except Exception as e: err=str(e)
-        w=tk.Toplevel(self); w.title('CPK1 辨識結果預覽'); w.geometry('900x680');
-        im=Image.open(p); im.thumbnail((820,430)); photo=ImageTk.PhotoImage(im); il=ttk.Label(w,image=photo); il.image=photo; il.pack(pady=10)
-        if err: ttk.Label(w,text=err,foreground='firebrick').pack()
-        frame=ttk.Frame(w); frame.pack(pady=8); edits=[]
-        names=['FormerX','FormerY','FTheta','LaterX','LaterY','LTheta']
+        w=tk.Toplevel(self); w.title('CPK1 辨識結果預覽'); w.geometry('1100x760')
+        left=ttk.Frame(w); left.pack(side='left',fill='both',expand=True,padx=8,pady=8)
+        right=ttk.Frame(w,width=300); right.pack(side='right',fill='y',padx=8,pady=8)
+        cv=tk.Canvas(left,bg='#202020',highlightthickness=0); cv.pack(fill='both',expand=True)
+        src=Image.open(p).convert('RGB'); state={'scale':1.0,'photo':None,'x':0,'y':0}
+        def redraw():
+            sc=state['scale']; im=src.resize((max(1,int(src.width*sc)),max(1,int(src.height*sc))))
+            state['photo']=ImageTk.PhotoImage(im); cv.delete('all'); cv.create_image(10,10,image=state['photo'],anchor='nw',tags='img'); cv.config(scrollregion=(0,0,im.width+20,im.height+20))
+        def zoom(factor):
+            state['scale']=max(0.15,min(5.0,state['scale']*factor)); redraw()
+        def fit():
+            w.update_idletasks(); aw=max(100,cv.winfo_width()-20); ah=max(100,cv.winfo_height()-20); state['scale']=min(aw/src.width,ah/src.height); redraw()
+        cv.bind('<MouseWheel>',lambda e: zoom(1.15 if e.delta>0 else 1/1.15))
+        cv.bind('<Button-4>',lambda e: zoom(1.15)); cv.bind('<Button-5>',lambda e: zoom(1/1.15))
+        drag={'x':0,'y':0}
+        cv.bind('<ButtonPress-1>',lambda e:(cv.scan_mark(e.x,e.y),drag.update(x=e.x,y=e.y)))
+        cv.bind('<B1-Motion>',lambda e:cv.scan_dragto(e.x,e.y,gain=1))
+        bar=ttk.Frame(right); bar.pack(fill='x',pady=(0,10))
+        ttk.Button(bar,text='－',width=4,command=lambda:zoom(1/1.2)).pack(side='left'); ttk.Button(bar,text='＋',width=4,command=lambda:zoom(1.2)).pack(side='left',padx=4); ttk.Button(bar,text='100%',command=lambda:(state.update(scale=1.0),redraw())).pack(side='left'); ttk.Button(bar,text='適合視窗',command=fit).pack(side='left',padx=4)
+        ttk.Label(right,text='滑鼠滾輪：縮放\n按住左鍵拖曳：移動畫面').pack(anchor='w',pady=(0,10))
+        if err: ttk.Label(right,text=err,foreground='firebrick',wraplength=280).pack(anchor='w',pady=5)
+        edits=[]; names=['FormerX','FormerY','FTheta','LaterX','LaterY','LTheta']
         for i,n in enumerate(names):
-            ttk.Label(frame,text=n).grid(row=i//3,column=(i%3)*2,padx=5,pady=4); v=tk.StringVar(value=(f'{vals[i]:.3f}' if vals else self.cpk[i].get())); ttk.Entry(frame,textvariable=v,width=10).grid(row=i//3,column=(i%3)*2+1); edits.append(v)
+            row=ttk.Frame(right); row.pack(fill='x',pady=4); ttk.Label(row,text=n,width=10).pack(side='left'); v=tk.StringVar(value=(f'{vals[i]:.3f}' if vals else self.cpk[i].get())); ttk.Entry(row,textvariable=v,width=12).pack(side='left'); edits.append(v)
         def apply():
             try:
-                for i,v in enumerate(edits): float(v.get()); self.cpk[i].set(f'{float(v.get()):.3f}')
+                for i,v in enumerate(edits): self.cpk[i].set(f'{float(v.get()):.3f}')
                 w.destroy()
             except: messagebox.showerror('錯誤','六個 CPK 都必須是數字。',parent=w)
-        ttk.Button(w,text='確認套用',command=apply).pack(pady=10,ipadx=30)
+        ttk.Button(right,text='確認套用',command=apply).pack(pady=18,ipadx=30)
+        w.after(150,fit)
+
+    def _safe_name(self, text):
+        return re.sub(r'[<>:"/\\|?*]+','_',text).strip().rstrip('.')
+
+    def _unique_folder(self, root, name):
+        p=os.path.join(root,name); n=2
+        while os.path.exists(p): p=os.path.join(root,f'{name}_{n}'); n+=1
+        os.makedirs(p,exist_ok=False); return p
+
+    def _copy_materials(self, folder):
+        names={'cpk1':'CPK1','cpk2':'CPK2','up':'up','down':'down','sys':'sysdata'}
+        for k,src in self.files.items():
+            if not src: continue
+            ext=os.path.splitext(src)[1] or ('.txt' if k=='sys' else '')
+            shutil.copy2(src,os.path.join(folder,names[k]+ext.lower()))
+
+    def _make_pdf(self, path, fields, cpk, data):
+        # Portable PDF preview: generated without requiring Excel/Office.
+        c=pdfcanvas.Canvas(path,pagesize=A4); W,H=A4
+        c.setFont('Helvetica-Bold',15); c.drawString(36,H-42,'CPK Report')
+        c.setFont('Helvetica',9); y=H-62
+        info=[('Customer',fields['customer']),('Model',fields['model']),('Serial',fields['serial']),('Engineer',fields['eng1']+((' / '+fields['eng2']) if fields['eng2'] else '')),('Date',fields['date'].strftime('%Y/%m/%d'))]
+        for k,v in info: c.drawString(36,y,f'{k}: {v}'); y-=14
+        names=['FormerX','FormerY','FTheta','LaterX','LaterY','LTheta']; y-=4
+        c.setFont('Helvetica-Bold',9); c.drawString(36,y,'CPK'); y-=14; c.setFont('Helvetica',8)
+        for i,n in enumerate(names): c.drawString(36+(i%3)*170,y-(i//3)*14,f'{n}: {cpk[i]:.3f}')
+        y-=42
+        # Image pages keep originals readable.
+        c.setFont('Helvetica',6.5); colx=[36,112,188,264,340,416]; c.drawString(18,y,'No.')
+        for j,n in enumerate(names): c.drawString(colx[j],y,n)
+        y-=10
+        for idx,row in enumerate(data,1):
+            if y<40: c.showPage(); y=H-40; c.setFont('Helvetica',6.5)
+            c.drawRightString(30,y,str(idx))
+            for j,v in enumerate(row): c.drawRightString(colx[j]+45,y,f'{v:.3f}')
+            y-=7
+        for key,title in [('cpk1','CPK1'),('cpk2','CPK2'),('up','Camera Up'),('down','Camera Down')]:
+            src=self.files.get(key)
+            if not src: continue
+            c.showPage(); c.setFont('Helvetica-Bold',12); c.drawString(36,H-38,title)
+            try:
+                im=Image.open(src); iw,ih=im.size; maxw,maxh=W-72,H-90; sc=min(maxw/iw,maxh/ih); dw,dh=iw*sc,ih*sc
+                c.drawImage(ImageReader(im),36,H-60-dh,width=dw,height=dh,preserveAspectRatio=True,mask='auto')
+            except Exception: pass
+        c.save()
+
     def generate(self):
         try:
             if not self.customer.get().strip() or not self.model.get().strip() or not self.serial.get().strip() or not self.eng1.get().strip(): raise ValueError('客戶名稱、機台型號、機台序號、工程師 1 為必填。')
             if not self.files['sys']: raise ValueError('請選擇 sysdata.txt。')
-            vals=[float(v.get()) for v in self.cpk]
-            d=datetime.strptime(self.datev.get().strip(),'%Y/%m/%d').date(); data=parse_sysdata(self.files['sys'])
+            vals=[float(v.get()) for v in self.cpk]; d=datetime.strptime(self.datev.get().strip(),'%Y/%m/%d').date(); data=parse_sysdata(self.files['sys'])
             has_ccd=bool(self.files['up'] or self.files['down']); tname='sample.xlsx' if has_ccd else 'sample_without_ccd.xlsx'; template=os.path.join(base_dir(),'templates',tname)
-            default=f"{self.customer.get().strip()}-{self.model.get().strip()}-{self.serial.get().strip()}-{d.isoformat()}.xlsx"
-            out=filedialog.asksaveasfilename(defaultextension='.xlsx',initialfile=default,filetypes=[('Excel Workbook','*.xlsx')]);
-            if not out:return
             fields={'customer':self.customer.get().strip(),'model':self.model.get().strip(),'serial':self.serial.get().strip(),'eng1':self.eng1.get().strip(),'eng2':self.eng2.get().strip(),'date':d}
-            generate_report(template,out,fields,vals,data,self.files); messagebox.showinfo('完成',f'報告已產生：\n{out}')
+            base=self._safe_name(f"{fields['customer']}-{fields['model']}-{fields['serial']}-{d.isoformat()}")
+            parent=filedialog.askdirectory(title='選擇報告儲存位置');
+            if not parent:return
+            folder=self._unique_folder(parent,base); xlsx=os.path.join(folder,base+'.xlsx'); pdf=os.path.join(folder,base+'.pdf')
+            generate_report(template,xlsx,fields,vals,data,self.files); self._copy_materials(folder); self._make_pdf(pdf,fields,vals,data)
+            # Open PDF and report folder on Windows.
+            try: os.startfile(pdf)
+            except Exception: pass
+            try: os.startfile(folder)
+            except Exception: pass
+            messagebox.showinfo('完成',f'報告已產生：\n{folder}\n\nExcel、PDF、照片與 sysdata 已整理在同一資料夾。')
         except Exception as e: messagebox.showerror('無法產出報告',str(e))
+
     def help(self):
-        messagebox.showinfo('使用說明','1. 輸入客戶/機型/序號/工程師/日期。\n2. 選 CPK1 後會開啟 OCR/人工確認預覽。\n3. 選 sysdata，程式取最後 100 筆有效資料的前 6 欄。\n4. Camera Up/Down 任一有提供時自動使用 CCD 範本。\n5. 確認六個 CPK 後按「產出報告」。')
+        messagebox.showinfo('使用說明','1. 輸入客戶/機型/序號/工程師/日期（YYYY/MM/DD）。\n2. 選 CPK1 後會開啟可縮放/拖曳的 OCR 預覽。\n3. 選 sysdata，程式取最後 100 筆有效資料的前 6 欄。\n4. Camera Up/Down 任一有提供時自動使用 CCD 範本。\n5. 產出時選擇父資料夾，程式自動建立「客戶-機型-序號-日期」資料夾，並放入 Excel、PDF、照片與 sysdata。\n6. 完成後自動開啟 PDF 與儲存資料夾。')
 if __name__=='__main__': App().mainloop()

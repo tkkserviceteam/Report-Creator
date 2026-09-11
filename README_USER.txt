@@ -17,4 +17,4 @@ CPK Report Generator - Windows x64 Portable
 
 注意：
 - Windows SmartScreen 第一次執行未簽章 EXE 時可能會顯示警告。
-- v0.2 為測試版，請先使用非正式報告驗證版面。
+- v0.3 為測試版，請先使用非正式報告驗證版面。

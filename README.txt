@@ -1,4 +1,4 @@
-CPK Report Generator v0.2 - Build-ready Windows Portable project
+CPK Report Generator v0.3 - Build-ready Windows Portable project
 ================================================================
 
 此資料夾是 Windows x64 Portable EXE 的完整原始專案與自動建置設定。
@@ -21,4 +21,4 @@ CPK_Report_Generator.exe
 - 產生 Excel 報告
 - 公司章原始物件在插入報告圖片後重新移到 drawing 最上層
 
-目前版本：v0.2 測試版
+目前版本：v0.3 測試版
