@@ -1,0 +1,60 @@
+name: Build Windows Portable EXE
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          architecture: 'x64'
+
+      - name: Install build dependencies
+        shell: powershell
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller pillow
+
+      - name: Install Tesseract OCR
+        shell: powershell
+        run: |
+          choco install tesseract --yes --no-progress
+          $src = 'C:\Program Files\Tesseract-OCR'
+          if (-not (Test-Path $src)) { throw "Tesseract not found at $src" }
+          if (Test-Path 'ocr') { Remove-Item 'ocr' -Recurse -Force }
+          Copy-Item $src 'ocr' -Recurse
+          if (-not (Test-Path 'ocr\tesseract.exe')) { throw 'ocr\tesseract.exe missing' }
+          if (-not (Test-Path 'ocr\tessdata\eng.traineddata')) { throw 'eng.traineddata missing' }
+
+      - name: Build portable app
+        shell: cmd
+        run: build_github.bat
+
+      - name: Smoke test files
+        shell: powershell
+        run: |
+          if (-not (Test-Path 'release\CPK_Report_Generator\CPK_Report_Generator.exe')) { throw 'EXE missing' }
+          if (-not (Test-Path 'release\CPK_Report_Generator\_internal\templates\sample.xlsx')) { throw 'sample.xlsx missing' }
+          if (-not (Test-Path 'release\CPK_Report_Generator\_internal\ocr\tesseract.exe')) { throw 'tesseract.exe missing' }
+
+      - name: Create ZIP
+        shell: powershell
+        run: |
+          Compress-Archive -Path 'release\CPK_Report_Generator' -DestinationPath 'CPK_Report_Generator_Windows_x64_Portable.zip' -Force
+
+      - name: Upload portable package
+        uses: actions/upload-artifact@v4
+        with:
+          name: CPK_Report_Generator_Windows_x64_Portable
+          path: CPK_Report_Generator_Windows_x64_Portable.zip
+          if-no-files-found: error
+          retention-days: 30
