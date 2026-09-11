@@ -1,0 +1,5 @@
+{
+  "engineers": ["Anko", "Eric", "Jacky", "Jason", "Jerry", "Jones", "Neil"],
+  "machine_models": ["G2", "G5", "G9", "G9+", "GT+", "GT++", "GSE", "GLE", "Gfocus", "Pmax2", "Pmax6", "Pmax8", "K870", "GAce500"],
+  "cpk_pass": 2.0
+}

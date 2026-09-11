@@ -1,0 +1,22 @@
+不用在電腦安裝任何開發軟體的建置方式
+========================================
+
+1. 在 GitHub 建立一個新的 Private repository。
+2. 將這個資料夾內「所有檔案」上傳到 repository 根目錄，包含 .github 資料夾。
+3. GitHub 頁面上點 Actions。
+4. 選「Build Windows Portable EXE」。
+5. 點 Run workflow。
+6. 等待 Build 完成（綠色勾勾）。
+7. 點進該次執行，在 Artifacts 下載：
+   CPK_Report_Generator_Windows_x64_Portable
+8. 解壓縮下載的 artifact，再解壓縮其中的 ZIP。
+9. 最終執行檔：
+   CPK_Report_Generator\CPK_Report_Generator.exe
+
+這個建置會在 GitHub 的 Windows 電腦自動：
+- 安裝 Python 3.11（只在雲端建置環境）
+- 安裝 PyInstaller / Pillow
+- 安裝並包入 Tesseract OCR
+- 建立 Windows x64 Portable EXE
+
+最終使用報告產生器的電腦不需要安裝以上任何軟體。
