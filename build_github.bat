@@ -2,6 +2,15 @@
 setlocal
 cd /d "%~dp0"
 
+if not exist "templates\sample.xlsx" (
+  echo ERROR: templates\sample.xlsx is missing from repository root.
+  exit /b 2
+)
+if not exist "templates\sample_without_ccd.xlsx" (
+  echo ERROR: templates\sample_without_ccd.xlsx is missing from repository root.
+  exit /b 2
+)
+
 if exist build rmdir /s /q build
 if exist dist rmdir /s /q dist
 if exist release rmdir /s /q release

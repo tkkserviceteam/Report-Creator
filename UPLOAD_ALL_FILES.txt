@@ -1,0 +1,13 @@
+v0.3.2 IMPORTANT
+
+Upload/replace ALL files and folders from this package into the ROOT of the GitHub repository.
+The repository root must contain:
+  app.py
+  config.json
+  requirements-build.txt
+  templates/sample.xlsx
+  templates/sample_without_ccd.xlsx
+  .github/workflows/build-windows.yml
+
+Do not upload only app.py or only the workflow.
+Then run Actions > Build Windows Portable EXE > Run workflow.
