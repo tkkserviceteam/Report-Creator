@@ -1,4 +1,4 @@
-CPK Report Generator v0.3.1 - Windows Portable
+CPK Report Generator v0.3.3 - Windows Portable
 
 修正：
 1. 修正啟動時 ModuleNotFoundError: No module named 'reportlab'。

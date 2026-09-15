@@ -1,4 +1,4 @@
-v0.3.2 IMPORTANT
+v0.3.3 IMPORTANT
 
 Upload/replace ALL files and folders from this package into the ROOT of the GitHub repository.
 The repository root must contain:
