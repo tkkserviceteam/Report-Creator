@@ -17,7 +17,14 @@ NS_REL="http://schemas.openxmlformats.org/package/2006/relationships"
 ET.register_namespace('', NS_MAIN); ET.register_namespace('xdr',NS_XDR); ET.register_namespace('a',NS_A); ET.register_namespace('r',NS_R)
 
 def base_dir():
-    return getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
+    # Portable build: prefer resources placed next to the EXE.
+    # Fall back to PyInstaller's internal bundle for compatibility.
+    if getattr(sys, 'frozen', False):
+        exe_dir = os.path.dirname(sys.executable)
+        if os.path.exists(os.path.join(exe_dir, 'config.json')):
+            return exe_dir
+        return getattr(sys, '_MEIPASS', exe_dir)
+    return os.path.dirname(os.path.abspath(__file__))
 
 def load_config():
     with open(os.path.join(base_dir(),'config.json'),encoding='utf-8') as f: return json.load(f)

@@ -11,9 +11,10 @@ python -m PyInstaller ^
   --clean ^
   --windowed ^
   --name CPK_Report_Generator ^
-  --add-data "config.json;." ^
-  --add-data "templates;templates" ^
-  --add-data "ocr;ocr" ^
+  --collect-all reportlab ^
+  --hidden-import reportlab.pdfgen.canvas ^
+  --hidden-import reportlab.lib.pagesizes ^
+  --hidden-import reportlab.lib.utils ^
   --hidden-import PIL._tkinter_finder ^
   app.py
 
@@ -21,6 +22,11 @@ if errorlevel 1 exit /b 1
 
 mkdir release
 xcopy /E /I /Y "dist\CPK_Report_Generator" "release\CPK_Report_Generator" >nul
+
+REM Keep user-editable resources visibly next to the EXE.
+xcopy /E /I /Y "templates" "release\CPK_Report_Generator\templates" >nul
+copy /Y "config.json" "release\CPK_Report_Generator\config.json" >nul
+xcopy /E /I /Y "ocr" "release\CPK_Report_Generator\ocr" >nul
 if not exist "release\CPK_Report_Generator\output" mkdir "release\CPK_Report_Generator\output"
 copy /Y "README_USER.txt" "release\CPK_Report_Generator\README_USER.txt" >nul
 

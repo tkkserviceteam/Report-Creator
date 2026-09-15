@@ -5,7 +5,7 @@ echo ======================================================
 echo CPK Report Generator - Local Windows Build
 echo ======================================================
 echo This method requires Python 3.11 x64 on THIS build PC.
-echo For zero-install build, use GitHub Actions (BUILD_WITH_GITHUB.txt).
+echo For zero-install build, use GitHub Actions.
 echo.
 python --version >nul 2>&1
 if errorlevel 1 (
@@ -13,7 +13,8 @@ if errorlevel 1 (
   pause
   exit /b 1
 )
-python -m pip install --upgrade pyinstaller pillow
+python -m pip install --upgrade pip
+python -m pip install -r requirements-build.txt
 if not exist "ocr\tesseract.exe" (
   echo.
   echo ERROR: ocr\tesseract.exe not found.
