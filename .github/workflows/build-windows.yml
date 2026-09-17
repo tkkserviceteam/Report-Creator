@@ -35,6 +35,15 @@ jobs:
           if (-not (Test-Path 'ocr\tesseract.exe')) { throw 'ocr\tesseract.exe missing' }
           if (-not (Test-Path 'ocr\tessdata\eng.traineddata')) { throw 'eng.traineddata missing' }
 
+      - name: Install LibreOffice PDF engine
+        shell: powershell
+        run: |
+          choco install libreoffice-fresh --yes --no-progress
+          $lo = 'C:\Program Files\LibreOffice'
+          if (-not (Test-Path "$lo\program\soffice.exe")) { throw 'LibreOffice soffice.exe missing' }
+          if (Test-Path 'libreoffice') { Remove-Item 'libreoffice' -Recurse -Force }
+          Copy-Item $lo 'libreoffice' -Recurse
+
       - name: Verify source resources
         shell: powershell
         run: |
@@ -55,11 +64,13 @@ jobs:
           if (-not (Test-Path "$pkg\CPK_Report_Generator.exe")) { throw 'EXE missing before package assembly' }
           New-Item -ItemType Directory -Force -Path "$pkg\templates" | Out-Null
           New-Item -ItemType Directory -Force -Path "$pkg\ocr" | Out-Null
-          New-Item -ItemType Directory -Force -Path "$pkg\output" | Out-Null
+          New-Item -ItemType Directory -Force -Path "$pkg\Report History" | Out-Null
+          New-Item -ItemType Directory -Force -Path "$pkg\libreoffice" | Out-Null
           Copy-Item -LiteralPath 'templates\sample.xlsx' -Destination "$pkg\templates\sample.xlsx" -Force
           Copy-Item -LiteralPath 'templates\sample_without_ccd.xlsx' -Destination "$pkg\templates\sample_without_ccd.xlsx" -Force
           Copy-Item -LiteralPath 'config.json' -Destination "$pkg\config.json" -Force
           Copy-Item -Path 'ocr\*' -Destination "$pkg\ocr" -Recurse -Force
+          Copy-Item -Path 'libreoffice\*' -Destination "$pkg\libreoffice" -Recurse -Force
           if (Test-Path 'README_USER.txt') { Copy-Item -LiteralPath 'README_USER.txt' -Destination "$pkg\README_USER.txt" -Force }
           Write-Host 'Portable package contents:'
           Get-ChildItem $pkg -Recurse | Select-Object FullName
@@ -72,6 +83,7 @@ jobs:
           if (-not (Test-Path 'release\CPK_Report_Generator\templates\sample_without_ccd.xlsx')) { throw 'sample_without_ccd.xlsx missing from final portable package' }
           if (-not (Test-Path 'release\CPK_Report_Generator\ocr\tesseract.exe')) { throw 'tesseract.exe missing' }
           if (-not (Test-Path 'release\CPK_Report_Generator\config.json')) { throw 'config.json missing' }
+          if (-not (Test-Path 'release\CPK_Report_Generator\libreoffice\program\soffice.exe')) { throw 'Portable LibreOffice missing' }
 
       - name: Create ZIP
         shell: powershell
