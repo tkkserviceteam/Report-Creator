@@ -20,10 +20,6 @@ python -m PyInstaller ^
   --clean ^
   --windowed ^
   --name CPK_Report_Generator ^
-  --collect-all reportlab ^
-  --hidden-import reportlab.pdfgen.canvas ^
-  --hidden-import reportlab.lib.pagesizes ^
-  --hidden-import reportlab.lib.utils ^
   --hidden-import PIL._tkinter_finder ^
   app.py
 

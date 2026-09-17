@@ -4,9 +4,6 @@ import xml.etree.ElementTree as ET
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from PIL import Image, ImageTk, ImageOps, ImageEnhance
-from reportlab.pdfgen import canvas as pdfcanvas
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.utils import ImageReader
 
 APP = "CPK Report Generator"
 NS_MAIN="http://schemas.openxmlformats.org/spreadsheetml/2006/main"
@@ -130,18 +127,49 @@ def find_tesseract():
 
 def ocr_cpk(path):
     exe=find_tesseract()
-    if not exe: raise RuntimeError('Portable OCR 引擎尚未放入 ocr/tesseract.exe。可先手動輸入 CPK。')
-    im=Image.open(path).convert('L'); im=ImageOps.autocontrast(im); im=ImageEnhance.Contrast(im).enhance(1.8); im=im.resize((im.width*2,im.height*2))
-    tmp=tempfile.NamedTemporaryFile(suffix='.png',delete=False); tmp.close(); im.save(tmp.name)
+    if not exe: raise RuntimeError('找不到 Portable OCR 引擎 ocr/tesseract.exe。')
+    tessdata=os.path.join(os.path.dirname(exe),'tessdata')
+    src=ImageOps.autocontrast(Image.open(path).convert('L')); W,H=src.size
+    vals=[]
+    for row in range(3):
+        for col in range(2):
+            panel=src.crop((int(col*W/2),int(row*H/3),int((col+1)*W/2),int((row+1)*H/3)))
+            roi=panel.crop((0,int(panel.height*0.60),panel.width,panel.height))
+            roi=ImageEnhance.Contrast(roi).enhance(2.2).resize((roi.width*3,roi.height*3))
+            tmp=tempfile.NamedTemporaryFile(suffix='.png',delete=False); tmp.close(); roi.save(tmp.name)
+            try:
+                cmd=[exe,tmp.name,'stdout','--psm','6','-l','eng','-c','tessedit_char_whitelist=CcpkPK=:.0123456789']
+                if os.path.isdir(tessdata): cmd += ['--tessdata-dir',tessdata]
+                cp=subprocess.run(cmd,capture_output=True,text=True,errors='ignore',timeout=20)
+                txt=cp.stdout.replace(' ','')
+            finally:
+                try: os.unlink(tmp.name)
+                except: pass
+            m=re.search(r'Cpk[=:]?([0-9]+(?:\.[0-9]+)?)',txt,re.I)
+            if m: vals.append(float(m.group(1)))
+            else:
+                nums=re.findall(r'([0-9]+\.[0-9]{2,4})',txt)
+                vals.append(float(nums[-1]) if nums else None)
+    if any(v is None for v in vals):
+        raise RuntimeError(f'OCR 成功辨識 {sum(v is not None for v in vals)}/6 個 Cpk。請在預覽視窗確認並手動補正。')
+    return vals
+
+def convert_excel_to_pdf(xlsx, pdf, outdir):
+    ps = "$ErrorActionPreference='Stop'; $xlsx=$args[0]; $pdf=$args[1]; $excel=New-Object -ComObject Excel.Application; $excel.Visible=$false; $excel.DisplayAlerts=$false; try { $wb=$excel.Workbooks.Open($xlsx); $wb.ExportAsFixedFormat(0,$pdf); $wb.Close($false) } finally { $excel.Quit() }"
     try:
-        cp=subprocess.run([exe,tmp.name,'stdout','--psm','6','-l','eng'],capture_output=True,text=True,errors='ignore',timeout=30)
-        txt=cp.stdout
-    finally:
-        try: os.unlink(tmp.name)
-        except: pass
-    vals=[float(x) for x in re.findall(r'\bCpk\s*[=:]\s*([0-9]+(?:\.[0-9]+)?)',txt,re.I)]
-    if len(vals)<6: raise RuntimeError(f'OCR 找到 {len(vals)} 個 Cpk，未達 6 個。請在預覽視窗手動修正。')
-    return vals[:6]
+        r=subprocess.run(['powershell','-NoProfile','-ExecutionPolicy','Bypass','-Command',ps,xlsx,pdf],capture_output=True,text=True,timeout=120)
+        if r.returncode==0 and os.path.exists(pdf) and os.path.getsize(pdf)>0: return 'Microsoft Excel'
+    except Exception: pass
+    candidates=[os.path.join(base_dir(),'libreoffice','program','soffice.exe'),os.path.join(base_dir(),'libreoffice','soffice.exe')]
+    soffice=next((p for p in candidates if os.path.exists(p)),None)
+    if not soffice: raise RuntimeError('PDF 轉換失敗：找不到 Microsoft Excel，也找不到內建 LibreOffice。')
+    profile=os.path.join(tempfile.gettempdir(),'CPK_Report_LO_Profile'); os.makedirs(profile,exist_ok=True)
+    uri='file:///'+profile.replace(chr(92),'/')
+    r=subprocess.run([soffice,'-env:UserInstallation='+uri,'--headless','--convert-to','pdf','--outdir',outdir,xlsx],capture_output=True,text=True,timeout=180)
+    generated=os.path.join(outdir,os.path.splitext(os.path.basename(xlsx))[0]+'.pdf')
+    if r.returncode!=0 or not os.path.exists(generated): raise RuntimeError('LibreOffice PDF 轉換失敗：'+(r.stderr or r.stdout)[-500:])
+    if os.path.abspath(generated)!=os.path.abspath(pdf): shutil.move(generated,pdf)
+    return 'LibreOffice Portable'
 
 class App(tk.Tk):
     def __init__(self):
@@ -224,35 +252,6 @@ class App(tk.Tk):
             ext=os.path.splitext(src)[1] or ('.txt' if k=='sys' else '')
             shutil.copy2(src,os.path.join(folder,names[k]+ext.lower()))
 
-    def _make_pdf(self, path, fields, cpk, data):
-        # Portable PDF preview: generated without requiring Excel/Office.
-        c=pdfcanvas.Canvas(path,pagesize=A4); W,H=A4
-        c.setFont('Helvetica-Bold',15); c.drawString(36,H-42,'CPK Report')
-        c.setFont('Helvetica',9); y=H-62
-        info=[('Customer',fields['customer']),('Model',fields['model']),('Serial',fields['serial']),('Engineer',fields['eng1']+((' / '+fields['eng2']) if fields['eng2'] else '')),('Date',fields['date'].strftime('%Y/%m/%d'))]
-        for k,v in info: c.drawString(36,y,f'{k}: {v}'); y-=14
-        names=['FormerX','FormerY','FTheta','LaterX','LaterY','LTheta']; y-=4
-        c.setFont('Helvetica-Bold',9); c.drawString(36,y,'CPK'); y-=14; c.setFont('Helvetica',8)
-        for i,n in enumerate(names): c.drawString(36+(i%3)*170,y-(i//3)*14,f'{n}: {cpk[i]:.3f}')
-        y-=42
-        # Image pages keep originals readable.
-        c.setFont('Helvetica',6.5); colx=[36,112,188,264,340,416]; c.drawString(18,y,'No.')
-        for j,n in enumerate(names): c.drawString(colx[j],y,n)
-        y-=10
-        for idx,row in enumerate(data,1):
-            if y<40: c.showPage(); y=H-40; c.setFont('Helvetica',6.5)
-            c.drawRightString(30,y,str(idx))
-            for j,v in enumerate(row): c.drawRightString(colx[j]+45,y,f'{v:.3f}')
-            y-=7
-        for key,title in [('cpk1','CPK1'),('cpk2','CPK2'),('up','Camera Up'),('down','Camera Down')]:
-            src=self.files.get(key)
-            if not src: continue
-            c.showPage(); c.setFont('Helvetica-Bold',12); c.drawString(36,H-38,title)
-            try:
-                im=Image.open(src); iw,ih=im.size; maxw,maxh=W-72,H-90; sc=min(maxw/iw,maxh/ih); dw,dh=iw*sc,ih*sc
-                c.drawImage(ImageReader(im),36,H-60-dh,width=dw,height=dh,preserveAspectRatio=True,mask='auto')
-            except Exception: pass
-        c.save()
 
     def generate(self):
         try:
@@ -262,18 +261,18 @@ class App(tk.Tk):
             has_ccd=bool(self.files['up'] or self.files['down']); tname='sample.xlsx' if has_ccd else 'sample_without_ccd.xlsx'; template=os.path.join(base_dir(),'templates',tname)
             fields={'customer':self.customer.get().strip(),'model':self.model.get().strip(),'serial':self.serial.get().strip(),'eng1':self.eng1.get().strip(),'eng2':self.eng2.get().strip(),'date':d}
             base=self._safe_name(f"{fields['customer']}-{fields['model']}-{fields['serial']}-{d.isoformat()}")
-            parent=filedialog.askdirectory(title='選擇報告儲存位置');
-            if not parent:return
+            parent=os.path.join(base_dir(),'Report History'); os.makedirs(parent,exist_ok=True)
             folder=self._unique_folder(parent,base); xlsx=os.path.join(folder,base+'.xlsx'); pdf=os.path.join(folder,base+'.pdf')
-            generate_report(template,xlsx,fields,vals,data,self.files); self._copy_materials(folder); self._make_pdf(pdf,fields,vals,data)
+            generate_report(template,xlsx,fields,vals,data,self.files); self._copy_materials(folder)
+            pdf_engine=convert_excel_to_pdf(xlsx,pdf,folder)
             # Open PDF and report folder on Windows.
             try: os.startfile(pdf)
             except Exception: pass
             try: os.startfile(folder)
             except Exception: pass
-            messagebox.showinfo('完成',f'報告已產生：\n{folder}\n\nExcel、PDF、照片與 sysdata 已整理在同一資料夾。')
+            messagebox.showinfo('完成',f'報告已產生：\n{folder}\n\nExcel、PDF、照片與 sysdata 已整理在同一資料夾。\nPDF 引擎：{pdf_engine}')
         except Exception as e: messagebox.showerror('無法產出報告',str(e))
 
     def help(self):
-        messagebox.showinfo('使用說明','1. 輸入客戶/機型/序號/工程師/日期（YYYY/MM/DD）。\n2. 選 CPK1 後會開啟可縮放/拖曳的 OCR 預覽。\n3. 選 sysdata，程式取最後 100 筆有效資料的前 6 欄。\n4. Camera Up/Down 任一有提供時自動使用 CCD 範本。\n5. 產出時選擇父資料夾，程式自動建立「客戶-機型-序號-日期」資料夾，並放入 Excel、PDF、照片與 sysdata。\n6. 完成後自動開啟 PDF 與儲存資料夾。')
+        messagebox.showinfo('使用說明','1. 輸入客戶/機型/序號/工程師/日期（YYYY/MM/DD）。\n2. 選 CPK1 後會開啟可縮放/拖曳的 OCR 預覽。\n3. 選 sysdata，程式取最後 100 筆有效資料的前 6 欄。\n4. Camera Up/Down 任一有提供時自動使用 CCD 範本。\n5. 報告固定儲存在程式旁的 Report History\\客戶-機型-序號-日期。\n6. PDF 直接由完成後的 Excel 轉換；完成後自動開啟 PDF 與該次報告資料夾。')
 if __name__=='__main__': App().mainloop()

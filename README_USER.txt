@@ -1,17 +1,8 @@
-CPK Report Generator v0.3.3 - Windows Portable
+CPK Report Generator v0.3.4
 
-修正：
-1. 修正啟動時 ModuleNotFoundError: No module named 'reportlab'。
-2. templates 資料夾會直接出現在 CPK_Report_Generator.exe 同一層。
-3. config.json、ocr、output 也都放在 EXE 同一層，不需要任何舊版本檔案。
-
-GitHub Actions 建置後，下載 Artifact 並解壓縮。
-正常資料夾應包含：
-  CPK_Report_Generator.exe
-  templates\sample.xlsx
-  templates\sample_without_ccd.xlsx
-  config.json
-  ocr\tesseract.exe
-  output\
-
-請整個 CPK_Report_Generator 資料夾一起保留，不要只單獨複製 EXE。
+1. 解壓縮整個資料夾後，直接執行 CPK_Report_Generator.exe。
+2. 不需安裝 Python、Tesseract 或 LibreOffice。
+3. 選擇 CPK1 後會自動 OCR，並開啟可縮放/拖曳的確認視窗。
+4. 報告固定儲存在程式資料夾旁的 Report History。
+5. PDF 會直接由產生完成的 Excel 轉換：若電腦有 Microsoft Excel 優先使用 Excel；否則使用內建 LibreOffice Portable。
+6. 完成後會自動開啟 PDF 與該次報告資料夾。
