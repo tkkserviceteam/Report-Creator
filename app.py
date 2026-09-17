@@ -154,23 +154,66 @@ def ocr_cpk(path):
         raise RuntimeError(f'OCR 成功辨識 {sum(v is not None for v in vals)}/6 個 Cpk。請在預覽視窗確認並手動補正。')
     return vals
 
+def ocr_cpk_panels(src, indices):
+    exe=find_tesseract()
+    if not exe: raise RuntimeError('找不到 Portable OCR 引擎 ocr/tesseract.exe。')
+    tessdata=os.path.join(os.path.dirname(exe),'tessdata')
+    gray=ImageOps.autocontrast(src.convert('L')); W,H=gray.size
+    result={}
+    for idx in indices:
+        row, col = divmod(idx, 2)
+        panel=gray.crop((int(col*W/2),int(row*H/3),int((col+1)*W/2),int((row+1)*H/3)))
+        roi=panel.crop((0,int(panel.height*0.55),panel.width,panel.height))
+        roi=ImageEnhance.Contrast(roi).enhance(2.5).resize((max(1,roi.width*4),max(1,roi.height*4)))
+        tmp=tempfile.NamedTemporaryFile(suffix='.png',delete=False); tmp.close(); roi.save(tmp.name)
+        try:
+            cmd=[exe,tmp.name,'stdout','--psm','6','-l','eng','-c','tessedit_char_whitelist=CcpkPK=:.0123456789']
+            if os.path.isdir(tessdata): cmd += ['--tessdata-dir',tessdata]
+            cp=subprocess.run(cmd,capture_output=True,text=True,errors='ignore',timeout=20)
+            txt=cp.stdout.replace(' ','')
+        finally:
+            try: os.unlink(tmp.name)
+            except: pass
+        m=re.search(r'Cpk[=:]?([0-9]+(?:\.[0-9]+)?)',txt,re.I)
+        if m: result[idx]=float(m.group(1)); continue
+        nums=re.findall(r'([0-9]+\.[0-9]{2,4})',txt)
+        result[idx]=float(nums[-1]) if nums else None
+    return result
+
 def convert_excel_to_pdf(xlsx, pdf, outdir):
-    ps = "$ErrorActionPreference='Stop'; $xlsx=$args[0]; $pdf=$args[1]; $excel=New-Object -ComObject Excel.Application; $excel.Visible=$false; $excel.DisplayAlerts=$false; try { $wb=$excel.Workbooks.Open($xlsx); $wb.ExportAsFixedFormat(0,$pdf); $wb.Close($false) } finally { $excel.Quit() }"
+    # Prefer Microsoft Excel itself for faithful PDF rendering.
+    ps1 = """param([string]$xlsx,[string]$pdf)
+$ErrorActionPreference='Stop'
+$excel=$null; $wb=$null
+try {
+  $excel=New-Object -ComObject Excel.Application
+  $excel.Visible=$false
+  $excel.DisplayAlerts=$false
+  $excel.AskToUpdateLinks=$false
+  $wb=$excel.Workbooks.Open($xlsx,0,$true)
+  $wb.ExportAsFixedFormat(0,$pdf,0,$true,$false)
+  $wb.Close($false)
+} finally {
+  if ($wb -ne $null) { try { $wb.Close($false) } catch {} }
+  if ($excel -ne $null) { try { $excel.Quit() } catch {} }
+}
+"""
+    script=os.path.join(tempfile.gettempdir(),'cpk_export_pdf.ps1')
+    with open(script,'w',encoding='utf-8-sig') as f: f.write(ps1)
     try:
-        r=subprocess.run(['powershell','-NoProfile','-ExecutionPolicy','Bypass','-Command',ps,xlsx,pdf],capture_output=True,text=True,timeout=120)
-        if r.returncode==0 and os.path.exists(pdf) and os.path.getsize(pdf)>0: return 'Microsoft Excel'
+        r=subprocess.run(['powershell','-NoProfile','-ExecutionPolicy','Bypass','-File',script,'-xlsx',os.path.abspath(xlsx),'-pdf',os.path.abspath(pdf)],capture_output=True,text=True,timeout=180)
+        if r.returncode==0 and os.path.exists(pdf) and os.path.getsize(pdf)>0: return 'Microsoft Excel（原版面匯出）'
     except Exception: pass
     candidates=[os.path.join(base_dir(),'libreoffice','program','soffice.exe'),os.path.join(base_dir(),'libreoffice','soffice.exe')]
     soffice=next((p for p in candidates if os.path.exists(p)),None)
-    if not soffice: raise RuntimeError('PDF 轉換失敗：找不到 Microsoft Excel，也找不到內建 LibreOffice。')
+    if not soffice: raise RuntimeError('PDF 轉換失敗：此電腦找不到 Microsoft Excel，且 Portable LibreOffice 不存在。')
     profile=os.path.join(tempfile.gettempdir(),'CPK_Report_LO_Profile'); os.makedirs(profile,exist_ok=True)
     uri='file:///'+profile.replace(chr(92),'/')
     r=subprocess.run([soffice,'-env:UserInstallation='+uri,'--headless','--convert-to','pdf','--outdir',outdir,xlsx],capture_output=True,text=True,timeout=180)
     generated=os.path.join(outdir,os.path.splitext(os.path.basename(xlsx))[0]+'.pdf')
     if r.returncode!=0 or not os.path.exists(generated): raise RuntimeError('LibreOffice PDF 轉換失敗：'+(r.stderr or r.stdout)[-500:])
     if os.path.abspath(generated)!=os.path.abspath(pdf): shutil.move(generated,pdf)
-    return 'LibreOffice Portable'
-
+    return 'LibreOffice Portable（相容模式，複雜版面可能略有差異）'
 class App(tk.Tk):
     def __init__(self):
         super().__init__(); self.title(APP); self.geometry('610x720'); self.resizable(False,False); self.cfg=load_config(); self.files={k:'' for k in ['cpk1','cpk2','up','down','sys']}; self.build()
@@ -205,36 +248,58 @@ class App(tk.Tk):
         vals=None; err=''
         try: vals=ocr_cpk(p)
         except Exception as e: err=str(e)
-        w=tk.Toplevel(self); w.title('CPK1 辨識結果預覽'); w.geometry('1100x760')
+        w=tk.Toplevel(self); w.title('CPK1 辨識結果預覽'); w.geometry('1120x780')
         left=ttk.Frame(w); left.pack(side='left',fill='both',expand=True,padx=8,pady=8)
-        right=ttk.Frame(w,width=300); right.pack(side='right',fill='y',padx=8,pady=8)
+        right=ttk.Frame(w,width=320); right.pack(side='right',fill='y',padx=8,pady=8)
         cv=tk.Canvas(left,bg='#202020',highlightthickness=0); cv.pack(fill='both',expand=True)
-        src=Image.open(p).convert('RGB'); state={'scale':1.0,'photo':None,'x':0,'y':0}
-        def redraw():
-            sc=state['scale']; im=src.resize((max(1,int(src.width*sc)),max(1,int(src.height*sc))))
+        src=Image.open(p).convert('RGB'); state={'scale':1.0,'photo':None}
+        def redraw(keep_view=True):
+            xv=cv.xview(); yv=cv.yview(); sc=state['scale']; im=src.resize((max(1,int(src.width*sc)),max(1,int(src.height*sc))))
             state['photo']=ImageTk.PhotoImage(im); cv.delete('all'); cv.create_image(10,10,image=state['photo'],anchor='nw',tags='img'); cv.config(scrollregion=(0,0,im.width+20,im.height+20))
+            if keep_view and xv and yv:
+                cv.xview_moveto(xv[0]); cv.yview_moveto(yv[0])
         def zoom(factor):
-            state['scale']=max(0.15,min(5.0,state['scale']*factor)); redraw()
+            state['scale']=max(0.15,min(6.0,state['scale']*factor)); redraw()
         def fit():
-            w.update_idletasks(); aw=max(100,cv.winfo_width()-20); ah=max(100,cv.winfo_height()-20); state['scale']=min(aw/src.width,ah/src.height); redraw()
-        cv.bind('<MouseWheel>',lambda e: zoom(1.15 if e.delta>0 else 1/1.15))
-        cv.bind('<Button-4>',lambda e: zoom(1.15)); cv.bind('<Button-5>',lambda e: zoom(1/1.15))
-        drag={'x':0,'y':0}
-        cv.bind('<ButtonPress-1>',lambda e:(cv.scan_mark(e.x,e.y),drag.update(x=e.x,y=e.y)))
-        cv.bind('<B1-Motion>',lambda e:cv.scan_dragto(e.x,e.y,gain=1))
-        bar=ttk.Frame(right); bar.pack(fill='x',pady=(0,10))
-        ttk.Button(bar,text='－',width=4,command=lambda:zoom(1/1.2)).pack(side='left'); ttk.Button(bar,text='＋',width=4,command=lambda:zoom(1.2)).pack(side='left',padx=4); ttk.Button(bar,text='100%',command=lambda:(state.update(scale=1.0),redraw())).pack(side='left'); ttk.Button(bar,text='適合視窗',command=fit).pack(side='left',padx=4)
-        ttk.Label(right,text='滑鼠滾輪：縮放\n按住左鍵拖曳：移動畫面').pack(anchor='w',pady=(0,10))
-        if err: ttk.Label(right,text=err,foreground='firebrick',wraplength=280).pack(anchor='w',pady=5)
+            w.update_idletasks(); aw=max(100,cv.winfo_width()-20); ah=max(100,cv.winfo_height()-20); state['scale']=min(aw/src.width,ah/src.height); redraw(False); cv.xview_moveto(0); cv.yview_moveto(0)
+        cv.bind('<MouseWheel>',lambda e: zoom(1.15 if e.delta>0 else 1/1.15)); cv.bind('<Button-4>',lambda e: zoom(1.15)); cv.bind('<Button-5>',lambda e: zoom(1/1.15))
+        cv.bind('<ButtonPress-1>',lambda e:cv.scan_mark(e.x,e.y)); cv.bind('<B1-Motion>',lambda e:cv.scan_dragto(e.x,e.y,gain=1))
+        bar=ttk.Frame(right); bar.pack(fill='x',pady=(0,8))
+        ttk.Button(bar,text='－',width=4,command=lambda:zoom(1/1.2)).pack(side='left'); ttk.Button(bar,text='＋',width=4,command=lambda:zoom(1.2)).pack(side='left',padx=4); ttk.Button(bar,text='100%',command=lambda:(state.update(scale=1.0),redraw(False))).pack(side='left'); ttk.Button(bar,text='適合視窗',command=fit).pack(side='left',padx=4)
+        ttk.Label(right,text='滑鼠滾輪：縮放\n按住左鍵拖曳：移動畫面',justify='left').pack(anchor='w',pady=(0,8))
+        status=tk.StringVar(value=err if err else '已完成第一次自動辨識。')
+        ttk.Label(right,textvariable=status,foreground='firebrick' if err else 'black',wraplength=300).pack(anchor='w',pady=5)
         edits=[]; names=['FormerX','FormerY','FTheta','LaterX','LaterY','LTheta']
         for i,n in enumerate(names):
-            row=ttk.Frame(right); row.pack(fill='x',pady=4); ttk.Label(row,text=n,width=10).pack(side='left'); v=tk.StringVar(value=(f'{vals[i]:.3f}' if vals else self.cpk[i].get())); ttk.Entry(row,textvariable=v,width=12).pack(side='left'); edits.append(v)
+            row=ttk.Frame(right); row.pack(fill='x',pady=4); ttk.Label(row,text=n,width=10).pack(side='left'); v=tk.StringVar(value=(f'{vals[i]:.3f}' if vals and vals[i] is not None else self.cpk[i].get())); ttk.Entry(row,textvariable=v,width=12).pack(side='left'); edits.append(v)
+        def set_results(res, label):
+            ok=0
+            for idx,val in res.items():
+                if val is not None: edits[idx].set(f'{val:.3f}'); ok+=1
+            status.set(f'{label}：成功辨識 {ok}/{len(res)} 個 Cpk。請確認數值。')
+        def rerun_all():
+            try: set_results(ocr_cpk_panels(src,range(6)),'重新辨識全部')
+            except Exception as e: status.set(str(e))
+        def rerun_visible():
+            try:
+                sc=state['scale']; x0=max(0,(cv.canvasx(0)-10)/sc); y0=max(0,(cv.canvasy(0)-10)/sc); x1=min(src.width,(cv.canvasx(cv.winfo_width())-10)/sc); y1=min(src.height,(cv.canvasy(cv.winfo_height())-10)/sc)
+                indices=[]
+                for idx in range(6):
+                    rr,cc=divmod(idx,2); px0=cc*src.width/2; px1=(cc+1)*src.width/2; py0=rr*src.height/3; py1=(rr+1)*src.height/3
+                    overlap=max(0,min(x1,px1)-max(x0,px0))*max(0,min(y1,py1)-max(y0,py0)); area=(px1-px0)*(py1-py0)
+                    if area and overlap/area >= 0.20: indices.append(idx)
+                if not indices: status.set('目前畫面沒有足夠完整的 CPK 區塊，請移動或縮小一點再辨識。'); return
+                set_results(ocr_cpk_panels(src,indices),'辨識目前畫面')
+            except Exception as e: status.set(str(e))
+        btns=ttk.Frame(right); btns.pack(fill='x',pady=(10,4))
+        ttk.Button(btns,text='重新辨識全部',command=rerun_all).pack(side='left',padx=(0,6)); ttk.Button(btns,text='辨識目前畫面',command=rerun_visible).pack(side='left')
+        ttk.Label(right,text='「辨識目前畫面」會依你目前放大/拖曳後可見的 CPK 區塊重新辨識，並只更新那些欄位。',wraplength=300).pack(anchor='w',pady=(4,10))
         def apply():
             try:
                 for i,v in enumerate(edits): self.cpk[i].set(f'{float(v.get()):.3f}')
                 w.destroy()
             except: messagebox.showerror('錯誤','六個 CPK 都必須是數字。',parent=w)
-        ttk.Button(right,text='確認套用',command=apply).pack(pady=18,ipadx=30)
+        ttk.Button(right,text='確認套用',command=apply).pack(pady=12,ipadx=30)
         w.after(150,fit)
 
     def _safe_name(self, text):
@@ -270,9 +335,10 @@ class App(tk.Tk):
             except Exception: pass
             try: os.startfile(folder)
             except Exception: pass
-            messagebox.showinfo('完成',f'報告已產生：\n{folder}\n\nExcel、PDF、照片與 sysdata 已整理在同一資料夾。\nPDF 引擎：{pdf_engine}')
+            note='' if pdf_engine.startswith('Microsoft Excel') else '\n\n注意：本機未使用 Microsoft Excel 匯出 PDF，目前為 LibreOffice 相容模式；若版面與 Excel 不一致，請以 Excel 檔為準。'
+            messagebox.showinfo('完成',f'報告已產生：\n{folder}\n\nExcel、PDF、照片與 sysdata 已整理在同一資料夾。\nPDF 引擎：{pdf_engine}{note}')
         except Exception as e: messagebox.showerror('無法產出報告',str(e))
 
     def help(self):
-        messagebox.showinfo('使用說明','1. 輸入客戶/機型/序號/工程師/日期（YYYY/MM/DD）。\n2. 選 CPK1 後會開啟可縮放/拖曳的 OCR 預覽。\n3. 選 sysdata，程式取最後 100 筆有效資料的前 6 欄。\n4. Camera Up/Down 任一有提供時自動使用 CCD 範本。\n5. 報告固定儲存在程式旁的 Report History\\客戶-機型-序號-日期。\n6. PDF 直接由完成後的 Excel 轉換；完成後自動開啟 PDF 與該次報告資料夾。')
+        messagebox.showinfo('使用說明','1. 輸入客戶/機型/序號/工程師/日期（YYYY/MM/DD）。\n2. 選 CPK1 後會自動 OCR；預覽可縮放/拖曳，並可按「重新辨識全部」或「辨識目前畫面」。\n3. 選 sysdata，程式取最後 100 筆有效資料的前 6 欄。\n4. Camera Up/Down 任一有提供時自動使用 CCD 範本。\n5. 報告固定儲存在程式旁的 Report History\\客戶-機型-序號-日期。\n6. PDF 直接由完成後的 Excel 轉換；完成後自動開啟 PDF 與該次報告資料夾。')
 if __name__=='__main__': App().mainloop()

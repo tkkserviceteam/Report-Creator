@@ -1,4 +1,4 @@
-CPK Report Generator v0.3.4
+CPK Report Generator v0.3.5
 
 1. 解壓縮整個資料夾後，直接執行 CPK_Report_Generator.exe。
 2. 不需安裝 Python、Tesseract 或 LibreOffice。

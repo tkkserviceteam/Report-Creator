@@ -1,0 +1,7 @@
+v0.3.5
+- OCR 預覽新增「重新辨識全部」與「辨識目前畫面」
+- 放大/拖曳後可針對目前可見 CPK 區塊重新 OCR，只更新對應欄位
+- PDF 優先透過 Microsoft Excel ExportAsFixedFormat 原版面匯出
+- 修正 PowerShell/Excel COM 呼叫方式，避免誤落入 LibreOffice 相容模式
+- 無 Excel 時仍可使用 Portable LibreOffice，但完成訊息會明確提示版面可能有差異
+- 報告固定儲存於程式旁 Report History
