@@ -1,8 +1,8 @@
-CPK Report Generator v0.3.5
+CPK Report Generator v0.4 Lite Portable
 
-1. 解壓縮整個資料夾後，直接執行 CPK_Report_Generator.exe。
-2. 不需安裝 Python、Tesseract 或 LibreOffice。
-3. 選擇 CPK1 後會自動 OCR，並開啟可縮放/拖曳的確認視窗。
-4. 報告固定儲存在程式資料夾旁的 Report History。
-5. PDF 會直接由產生完成的 Excel 轉換：若電腦有 Microsoft Excel 優先使用 Excel；否則使用內建 LibreOffice Portable。
-6. 完成後會自動開啟 PDF 與該次報告資料夾。
+1. 解壓縮整個資料夾後直接執行 CPK_Report_Generator.exe。
+2. CPK1 載入後會自動 OCR。新版只接受各圖表的 Cpk = 數值，不會拿座標軸數字補值。
+3. 預覽可縮放/拖曳；可按「重新辨識全部」或「辨識目前畫面」，也可手動修正。
+4. 報告固定存於程式旁的 Report History。
+5. PDF 為避免版型跑掉，只使用 Microsoft Excel 原生匯出。電腦若沒有 Excel，XLSX 仍會正常產生，但不產 PDF。
+6. Lite 版已移除大型 Portable LibreOffice，並改為 one-file 主程式以縮小攜帶體積。

@@ -125,95 +125,120 @@ def find_tesseract():
     if os.path.exists(local): return local
     return shutil.which('tesseract')
 
-def ocr_cpk(path):
+def _run_tesseract_image(im, psm='6', whitelist=None):
     exe=find_tesseract()
     if not exe: raise RuntimeError('找不到 Portable OCR 引擎 ocr/tesseract.exe。')
     tessdata=os.path.join(os.path.dirname(exe),'tessdata')
-    src=ImageOps.autocontrast(Image.open(path).convert('L')); W,H=src.size
-    vals=[]
-    for row in range(3):
-        for col in range(2):
-            panel=src.crop((int(col*W/2),int(row*H/3),int((col+1)*W/2),int((row+1)*H/3)))
-            roi=panel.crop((0,int(panel.height*0.60),panel.width,panel.height))
-            roi=ImageEnhance.Contrast(roi).enhance(2.2).resize((roi.width*3,roi.height*3))
-            tmp=tempfile.NamedTemporaryFile(suffix='.png',delete=False); tmp.close(); roi.save(tmp.name)
-            try:
-                cmd=[exe,tmp.name,'stdout','--psm','6','-l','eng','-c','tessedit_char_whitelist=CcpkPK=:.0123456789']
-                if os.path.isdir(tessdata): cmd += ['--tessdata-dir',tessdata]
-                cp=subprocess.run(cmd,capture_output=True,text=True,errors='ignore',timeout=20)
-                txt=cp.stdout.replace(' ','')
-            finally:
-                try: os.unlink(tmp.name)
-                except: pass
-            m=re.search(r'Cpk[=:]?([0-9]+(?:\.[0-9]+)?)',txt,re.I)
-            if m: vals.append(float(m.group(1)))
-            else:
-                nums=re.findall(r'([0-9]+\.[0-9]{2,4})',txt)
-                vals.append(float(nums[-1]) if nums else None)
-    if any(v is None for v in vals):
-        raise RuntimeError(f'OCR 成功辨識 {sum(v is not None for v in vals)}/6 個 Cpk。請在預覽視窗確認並手動補正。')
-    return vals
+    tmp=tempfile.NamedTemporaryFile(suffix='.png',delete=False); tmp.close(); im.save(tmp.name)
+    try:
+        cmd=[exe,tmp.name,'stdout','--psm',str(psm),'-l','eng']
+        if whitelist: cmd += ['-c','tessedit_char_whitelist='+whitelist]
+        if os.path.isdir(tessdata): cmd += ['--tessdata-dir',tessdata]
+        cp=subprocess.run(cmd,capture_output=True,text=True,errors='ignore',timeout=20)
+        return cp.stdout or ''
+    finally:
+        try: os.unlink(tmp.name)
+        except: pass
+
+def _norm(s):
+    return re.sub(r'[^a-z0-9]','',s.lower())
+
+def _red_text_mask(im):
+    # GKG's Ppk/Pp/Cpk/Cp result line is red. Keeping red pixels removes
+    # graph axes such as 0.010, which must never be accepted as Cpk.
+    rgb=im.convert('RGB')
+    px=rgb.load(); out=Image.new('L',rgb.size,255); op=out.load()
+    for y in range(rgb.height):
+        for x in range(rgb.width):
+            r,g,b=px[x,y]
+            if r >= 105 and r >= g*1.25 and r >= b*1.20:
+                op[x,y]=0
+    return out
+
+def _ocr_one_panel(panel, expected_title):
+    # 1) Verify the chart title from the top part of this panel.
+    top=ImageOps.autocontrast(panel.convert('L').crop((0,0,panel.width,max(1,int(panel.height*0.25)))))
+    top=top.resize((top.width*3,top.height*3))
+    title_txt=_run_tesseract_image(top,psm='6')
+    aliases={
+      'FormerX':['formerx'], 'FormerY':['formery'], 'FTheta':['ftheta','fthata'],
+      'LaterX':['laterx'], 'LaterY':['latery'], 'LTheta':['ltheta','lthata']
+    }
+    nt=_norm(title_txt)
+    if not any(a in nt for a in aliases.get(expected_title,[expected_title.lower()])):
+        return None, f'{expected_title}: 找不到標題'
+
+    # 2) OCR only the red result line in the bottom area.
+    bottom=panel.crop((0,int(panel.height*0.72),panel.width,panel.height))
+    mask=_red_text_mask(bottom)
+    mask=ImageOps.autocontrast(mask).resize((mask.width*4,mask.height*4))
+    txt=_run_tesseract_image(mask,psm='6')
+    compact=re.sub(r'\s+','',txt)
+    # Strict anchor: Cpk must exist; only the number immediately after Cpk/= is accepted.
+    m=re.search(r'(?i)C[pP][kK]\s*[:=]?\s*([0-9]+(?:[\.,][0-9]+)?)', compact)
+    if not m:
+        # OCR occasionally reads Cpk as Cpk with punctuation/spaces; retry without whitespace only,
+        # but NEVER fall back to an arbitrary number from the chart.
+        return None, f'{expected_title}: 找不到 Cpk = 數值'
+    raw=m.group(1).replace(',','.')
+    try: val=float(raw)
+    except: return None, f'{expected_title}: Cpk 數值格式錯誤'
+    # Guard against lost decimal points (e.g. 2.980 -> 2980.000).
+    if not (0.0 <= val < 100.0):
+        return None, f'{expected_title}: 辨識值 {val:g} 異常，未自動套用'
+    return val, f'{expected_title}: {val:.3f}'
 
 def ocr_cpk_panels(src, indices):
-    exe=find_tesseract()
-    if not exe: raise RuntimeError('找不到 Portable OCR 引擎 ocr/tesseract.exe。')
-    tessdata=os.path.join(os.path.dirname(exe),'tessdata')
-    gray=ImageOps.autocontrast(src.convert('L')); W,H=gray.size
-    result={}
+    names=['FormerX','FormerY','FTheta','LaterX','LaterY','LTheta']
+    W,H=src.size; result={}; messages=[]
     for idx in indices:
-        row, col = divmod(idx, 2)
-        panel=gray.crop((int(col*W/2),int(row*H/3),int((col+1)*W/2),int((row+1)*H/3)))
-        roi=panel.crop((0,int(panel.height*0.55),panel.width,panel.height))
-        roi=ImageEnhance.Contrast(roi).enhance(2.5).resize((max(1,roi.width*4),max(1,roi.height*4)))
-        tmp=tempfile.NamedTemporaryFile(suffix='.png',delete=False); tmp.close(); roi.save(tmp.name)
-        try:
-            cmd=[exe,tmp.name,'stdout','--psm','6','-l','eng','-c','tessedit_char_whitelist=CcpkPK=:.0123456789']
-            if os.path.isdir(tessdata): cmd += ['--tessdata-dir',tessdata]
-            cp=subprocess.run(cmd,capture_output=True,text=True,errors='ignore',timeout=20)
-            txt=cp.stdout.replace(' ','')
-        finally:
-            try: os.unlink(tmp.name)
-            except: pass
-        m=re.search(r'Cpk[=:]?([0-9]+(?:\.[0-9]+)?)',txt,re.I)
-        if m: result[idx]=float(m.group(1)); continue
-        nums=re.findall(r'([0-9]+\.[0-9]{2,4})',txt)
-        result[idx]=float(nums[-1]) if nums else None
-    return result
+        row,col=divmod(idx,2)
+        panel=src.crop((int(col*W/2),int(row*H/3),int((col+1)*W/2),int((row+1)*H/3)))
+        val,msg=_ocr_one_panel(panel,names[idx])
+        result[idx]=val; messages.append(msg)
+    return result, messages
+
+def ocr_cpk(path):
+    src=Image.open(path).convert('RGB')
+    result,messages=ocr_cpk_panels(src,range(6))
+    vals=[result.get(i) for i in range(6)]
+    if any(v is None for v in vals):
+        ok=sum(v is not None for v in vals)
+        raise RuntimeError(f'OCR 嚴格模式成功辨識 {ok}/6 個 Cpk。\n'+'\n'.join(messages)+'\n未辨識欄位請在預覽視窗手動確認或重新辨識。')
+    return vals
 
 def convert_excel_to_pdf(xlsx, pdf, outdir):
-    # Prefer Microsoft Excel itself for faithful PDF rendering.
-    ps1 = """param([string]$xlsx,[string]$pdf)
+    # Lite edition: use Microsoft Excel only. This preserves the workbook's
+    # print area, floating pictures and stamp layering far better than LibreOffice.
+    ps1 = r'''param([string]$xlsx,[string]$pdf)
 $ErrorActionPreference='Stop'
 $excel=$null; $wb=$null
 try {
   $excel=New-Object -ComObject Excel.Application
   $excel.Visible=$false
   $excel.DisplayAlerts=$false
-  $excel.AskToUpdateLinks=$false
   $wb=$excel.Workbooks.Open($xlsx,0,$true)
-  $wb.ExportAsFixedFormat(0,$pdf,0,$true,$false)
+  $wb.ExportAsFixedFormat(0,$pdf)
   $wb.Close($false)
-} finally {
+  $excel.Quit()
+  exit 0
+} catch {
   if ($wb -ne $null) { try { $wb.Close($false) } catch {} }
   if ($excel -ne $null) { try { $excel.Quit() } catch {} }
+  Write-Error $_
+  exit 2
 }
-"""
-    script=os.path.join(tempfile.gettempdir(),'cpk_export_pdf.ps1')
+'''
+    script=os.path.join(tempfile.gettempdir(),'cpk_excel_pdf.ps1')
     with open(script,'w',encoding='utf-8-sig') as f: f.write(ps1)
     try:
         r=subprocess.run(['powershell','-NoProfile','-ExecutionPolicy','Bypass','-File',script,'-xlsx',os.path.abspath(xlsx),'-pdf',os.path.abspath(pdf)],capture_output=True,text=True,timeout=180)
-        if r.returncode==0 and os.path.exists(pdf) and os.path.getsize(pdf)>0: return 'Microsoft Excel（原版面匯出）'
-    except Exception: pass
-    candidates=[os.path.join(base_dir(),'libreoffice','program','soffice.exe'),os.path.join(base_dir(),'libreoffice','soffice.exe')]
-    soffice=next((p for p in candidates if os.path.exists(p)),None)
-    if not soffice: raise RuntimeError('PDF 轉換失敗：此電腦找不到 Microsoft Excel，且 Portable LibreOffice 不存在。')
-    profile=os.path.join(tempfile.gettempdir(),'CPK_Report_LO_Profile'); os.makedirs(profile,exist_ok=True)
-    uri='file:///'+profile.replace(chr(92),'/')
-    r=subprocess.run([soffice,'-env:UserInstallation='+uri,'--headless','--convert-to','pdf','--outdir',outdir,xlsx],capture_output=True,text=True,timeout=180)
-    generated=os.path.join(outdir,os.path.splitext(os.path.basename(xlsx))[0]+'.pdf')
-    if r.returncode!=0 or not os.path.exists(generated): raise RuntimeError('LibreOffice PDF 轉換失敗：'+(r.stderr or r.stdout)[-500:])
-    if os.path.abspath(generated)!=os.path.abspath(pdf): shutil.move(generated,pdf)
-    return 'LibreOffice Portable（相容模式，複雜版面可能略有差異）'
+    except Exception as e:
+        raise RuntimeError('Excel 報告已完成，但 PDF 匯出失敗。此 Lite 版需要 Microsoft Excel 才能原版面輸出 PDF。\n'+str(e))
+    if r.returncode!=0 or not os.path.exists(pdf) or os.path.getsize(pdf)==0:
+        raise RuntimeError('Excel 報告已完成，但找不到 Microsoft Excel 或 PDF 匯出失敗。\nLite 版不再內建大型 LibreOffice，以縮小便攜包；Excel 檔仍已保存在 Report History。')
+    return 'Microsoft Excel（原版面匯出）'
+
 class App(tk.Tk):
     def __init__(self):
         super().__init__(); self.title(APP); self.geometry('610x720'); self.resizable(False,False); self.cfg=load_config(); self.files={k:'' for k in ['cpk1','cpk2','up','down','sys']}; self.build()
@@ -278,7 +303,7 @@ class App(tk.Tk):
                 if val is not None: edits[idx].set(f'{val:.3f}'); ok+=1
             status.set(f'{label}：成功辨識 {ok}/{len(res)} 個 Cpk。請確認數值。')
         def rerun_all():
-            try: set_results(ocr_cpk_panels(src,range(6)),'重新辨識全部')
+            try: res,msgs=ocr_cpk_panels(src,range(6)); set_results(res,'重新辨識全部'); status.set('重新辨識全部：\n'+'\n'.join(msgs))
             except Exception as e: status.set(str(e))
         def rerun_visible():
             try:
@@ -289,7 +314,7 @@ class App(tk.Tk):
                     overlap=max(0,min(x1,px1)-max(x0,px0))*max(0,min(y1,py1)-max(y0,py0)); area=(px1-px0)*(py1-py0)
                     if area and overlap/area >= 0.20: indices.append(idx)
                 if not indices: status.set('目前畫面沒有足夠完整的 CPK 區塊，請移動或縮小一點再辨識。'); return
-                set_results(ocr_cpk_panels(src,indices),'辨識目前畫面')
+                res,msgs=ocr_cpk_panels(src,indices); set_results(res,'辨識目前畫面'); status.set('辨識目前畫面：\n'+'\n'.join(msgs))
             except Exception as e: status.set(str(e))
         btns=ttk.Frame(right); btns.pack(fill='x',pady=(10,4))
         ttk.Button(btns,text='重新辨識全部',command=rerun_all).pack(side='left',padx=(0,6)); ttk.Button(btns,text='辨識目前畫面',command=rerun_visible).pack(side='left')
@@ -335,10 +360,10 @@ class App(tk.Tk):
             except Exception: pass
             try: os.startfile(folder)
             except Exception: pass
-            note='' if pdf_engine.startswith('Microsoft Excel') else '\n\n注意：本機未使用 Microsoft Excel 匯出 PDF，目前為 LibreOffice 相容模式；若版面與 Excel 不一致，請以 Excel 檔為準。'
-            messagebox.showinfo('完成',f'報告已產生：\n{folder}\n\nExcel、PDF、照片與 sysdata 已整理在同一資料夾。\nPDF 引擎：{pdf_engine}{note}')
+            note='' 
+            messagebox.showinfo('完成',f'報告已產生：\n{folder}\n\nExcel、PDF、照片與 sysdata 已整理在同一資料夾。\nPDF 引擎：{pdf_engine}')
         except Exception as e: messagebox.showerror('無法產出報告',str(e))
 
     def help(self):
-        messagebox.showinfo('使用說明','1. 輸入客戶/機型/序號/工程師/日期（YYYY/MM/DD）。\n2. 選 CPK1 後會自動 OCR；預覽可縮放/拖曳，並可按「重新辨識全部」或「辨識目前畫面」。\n3. 選 sysdata，程式取最後 100 筆有效資料的前 6 欄。\n4. Camera Up/Down 任一有提供時自動使用 CCD 範本。\n5. 報告固定儲存在程式旁的 Report History\\客戶-機型-序號-日期。\n6. PDF 直接由完成後的 Excel 轉換；完成後自動開啟 PDF 與該次報告資料夾。')
+        messagebox.showinfo('使用說明','1. 輸入客戶/機型/序號/工程師/日期（YYYY/MM/DD）。\n2. 選 CPK1 後會自動 OCR；預覽可縮放/拖曳，並可按「重新辨識全部」或「辨識目前畫面」。\n3. 選 sysdata，程式取最後 100 筆有效資料的前 6 欄。\n4. Camera Up/Down 任一有提供時自動使用 CCD 範本。\n5. 報告固定儲存在程式旁的 Report History\\客戶-機型-序號-日期。\n6. PDF 由 Microsoft Excel 原版面匯出；Lite 版不內建 LibreOffice。若電腦沒有 Excel，Excel 報告仍會保留在 Report History。')
 if __name__=='__main__': App().mainloop()
